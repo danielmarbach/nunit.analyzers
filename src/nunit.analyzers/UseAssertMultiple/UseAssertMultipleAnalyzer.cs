@@ -1,6 +1,8 @@
 using System;
 using System.Collections.Generic;
 using System.Collections.Immutable;
+using System.Diagnostics.CodeAnalysis;
+using System.Linq;
 using Microsoft.CodeAnalysis;
 using Microsoft.CodeAnalysis.Diagnostics;
 using Microsoft.CodeAnalysis.Operations;
@@ -37,7 +39,7 @@ namespace NUnit.Analyzers.UseAssertMultiple
         ///     Assert.That(instance[0], Is.EqualTo(' '));
         /// Or if they are more complex than that.
         /// </summary>
-        internal static bool IsIndependent(HashSet<string> previousArguments, string argument)
+        internal static bool IsIndependent(HashSet<string> previousArguments, string argument, string? nextArgument)
         {
             if (previousArguments.Contains(argument))
             {
@@ -81,14 +83,10 @@ namespace NUnit.Analyzers.UseAssertMultiple
                 // Check if the next operation is also an Assert invocation.
                 var previousArguments = new HashSet<string>(StringComparer.Ordinal);
 
-                // No need to check argument count as Assert.That needs at least one argument.
-                IArgumentOperation assertArgumentOperation = assertOperation.Arguments[0];
-                if (assertArgumentOperation.Value is IDelegateCreationOperation)
+                if (!TryGetArgument(assertOperation, out var assertArgument))
                 {
                     return;
                 }
-
-                var assertArgument = assertArgumentOperation.Syntax.ToString();
 
                 IOperation? statementBefore = null;
                 int firstAssert = -1;
@@ -99,13 +97,16 @@ namespace NUnit.Analyzers.UseAssertMultiple
                 foreach (var statement in blockOperation.Operations)
                 {
                     i++;
+                    IInvocationOperation? nextOperation = TryGetAssertThatOperation(blockOperation.Operations.ElementAtOrDefault(i + 1));
+                    TryGetArgument(nextOperation, out var nextArgument);
+
                     if (statement == assertExpression)
                     {
                         if (statementBefore is not null)
                         {
                             var beforeArguments = new HashSet<string>(StringComparer.Ordinal);
-                            if (IsIndependentAssert(beforeArguments, statementBefore) &&
-                                IsIndependent(beforeArguments, assertArgument))
+                            if (IsIndependentAssert(beforeArguments, statementBefore, nextOperation) &&
+                                IsIndependent(beforeArguments, assertArgument, nextArgument))
                             {
                                 // This statement can be merged with the previous, hence was reported already.
                                 return;
@@ -117,7 +118,7 @@ namespace NUnit.Analyzers.UseAssertMultiple
                     }
                     else if (firstAssert >= 0)
                     {
-                        if (IsIndependentAssert(previousArguments, statement))
+                        if (IsIndependentAssert(previousArguments, statement, nextOperation))
                         {
                             lastAssert = i;
                         }
@@ -139,32 +140,51 @@ namespace NUnit.Analyzers.UseAssertMultiple
             }
         }
 
-        private static bool IsIndependentAssert(HashSet<string> previousArguments, IOperation statement)
+        private static bool IsIndependentAssert(HashSet<string> previousArguments, IOperation statement, IOperation? nextStatement)
         {
             IInvocationOperation? currentAssertOperation = TryGetAssertThatOperation(statement);
+            IInvocationOperation? nextAssertOperation = TryGetAssertThatOperation(nextStatement);
             if (currentAssertOperation is not null)
             {
-                // No need to check argument count as Assert.That needs at least one argument.
-                IArgumentOperation argumentOperation = currentAssertOperation.Arguments[0];
-                if (argumentOperation.Value is IDelegateCreationOperation)
+                if (!TryGetArgument(currentAssertOperation, out var currentArgument))
                 {
-                    // Assert.That(() => { SomeCode }, Throws.Nothing);
-                    // TODO: Should we delve into the lambda?
-                    // For now state that it isn't mergeable inside an Assert.Multiple.
                     return false;
                 }
 
-                string currentArgument = argumentOperation.Syntax.ToString();
+                _ = TryGetArgument(nextAssertOperation, out var nextArgument);
 
                 // Check if test is independent
-                return IsIndependent(previousArguments, currentArgument);
+                return IsIndependent(previousArguments, currentArgument, nextArgument);
             }
 
             // Not even an Assert operation.
             return false;
         }
 
-        private static IInvocationOperation? TryGetAssertThatOperation(IOperation operation)
+        private static bool TryGetArgument(IInvocationOperation? currentAssertOperation, [NotNullWhen(true)] out string? currentArgument)
+        {
+            if (currentAssertOperation is null)
+            {
+                currentArgument = null;
+                return false;
+            }
+
+            // No need to check argument count as Assert.That needs at least one argument.
+            IArgumentOperation argumentOperation = currentAssertOperation.Arguments[0];
+            if (argumentOperation.Value is IDelegateCreationOperation)
+            {
+                // Assert.That(() => { SomeCode }, Throws.Nothing);
+                // TODO: Should we delve into the lambda?
+                // For now state that it isn't mergeable inside an Assert.Multiple.
+                currentArgument = null;
+                return false;
+            }
+
+            currentArgument = argumentOperation.Syntax.ToString();
+            return true;
+        }
+
+        private static IInvocationOperation? TryGetAssertThatOperation(IOperation? operation)
         {
             return (operation is IExpressionStatementOperation expressionOperation &&
                 expressionOperation.Operation is IInvocationOperation invocationOperation &&

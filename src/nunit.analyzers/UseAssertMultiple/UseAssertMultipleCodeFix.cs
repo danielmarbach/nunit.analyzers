@@ -73,7 +73,7 @@ namespace NUnit.Analyzers.UseAssertMultiple
                     if (statement is ExpressionStatementSyntax expressionStatement &&
                         AssertHelper.IsAssert(expressionStatement.Expression, out string member, out ArgumentListSyntax? argumentList) &&
                         member == NUnitFrameworkConstants.NameOfAssertThat &&
-                        UseAssertMultipleAnalyzer.IsIndependent(previousArguments, argumentList.Arguments[0].ToString()))
+                        UseAssertMultipleAnalyzer.IsIndependent(previousArguments, argumentList.Arguments[0].ToString(), null))
                     {
                         // Can be merged
                         // Check if this expression uses 'await'.
